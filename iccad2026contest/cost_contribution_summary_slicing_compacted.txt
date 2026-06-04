@@ -1,0 +1,34 @@
+ICCAD 2026 cost contribution summary (no runtime factor)
+timestamp: 2026-06-04T21:06:00.600447
+source_type: optimizer
+source: D:\EDA\ICCAD\FloorSet\iccad2026contest\Solution\slicing tree\my_optimizer.py
+num_cases: 100
+num_feasible: 0
+avg_block_count: 70.5000
+avg_runtime_seconds: 0.0944
+
+Primary metrics
+avg_HPWLgap: 2.058486
+avg_Areagap_bbox: 2.096949
+avg_Violationsrelative: 0.455214
+
+Violation components
+avg_Vfixed: 0.000000
+avg_Vpreplaced: 0.000000
+avg_Vgrouping: 5.240000
+avg_Vboundary: 15.350000
+avg_Vmib: 0.000000
+avg_total_soft_violations: 20.590000
+avg_max_possible_violations: 44.780000
+
+Derived no-runtime cost terms
+avg_hpwl_term: 1.029243
+avg_area_term: 1.048475
+avg_quality_factor: 3.077718
+avg_violation_factor: 2.510586
+avg_cost_no_runtime: 10.000000
+weighted_total_score_no_runtime: 10.000000
+
+Notes
+Vfixed and Vpreplaced are reported for debugging/information.
+The current official soft penalty uses boundary, grouping, and MIB only.

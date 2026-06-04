@@ -765,20 +765,28 @@ class ContestEvaluator:
         spec = importlib.util.spec_from_file_location("optimizer_module", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        
-        # Find optimizer class (compare by name, not identity, because
-        # importlib may create a separate class object for FloorplanOptimizer)
+
+        # Prefer common exported names defined in the loaded module itself.
+        # This avoids accidentally selecting imported helper/base classes.
+        for name in ['MyOptimizer', 'Optimizer', 'ContestOptimizer']:
+            if hasattr(module, name):
+                obj = getattr(module, name)
+                if (isinstance(obj, type) and
+                    issubclass(obj, FloorplanOptimizer) and
+                    obj.__name__ != 'FloorplanOptimizer' and
+                    getattr(obj, '__module__', None) == module.__name__):
+                    return obj(verbose=self.verbose)
+
+        # Fall back to any optimizer class defined in the loaded module.
+        # Compare by name, not identity, because importlib may create a
+        # separate class object for FloorplanOptimizer.
         for name in dir(module):
             obj = getattr(module, name)
             if (isinstance(obj, type) and
                 issubclass(obj, FloorplanOptimizer) and
-                obj.__name__ != 'FloorplanOptimizer'):
+                obj.__name__ != 'FloorplanOptimizer' and
+                getattr(obj, '__module__', None) == module.__name__):
                 return obj(verbose=self.verbose)
-        
-        # Try common names
-        for name in ['MyOptimizer', 'Optimizer', 'ContestOptimizer']:
-            if hasattr(module, name):
-                return getattr(module, name)(verbose=self.verbose)
         
         raise ValueError(f"No optimizer class found in {optimizer_path}")
     
@@ -972,22 +980,26 @@ def validate_submission(optimizer_path: str, quick: bool = False, verbose: bool 
     
     # Find optimizer class (same criteria as _load_optimizer to avoid
     # false positives where --validate passes but --evaluate fails).
-    # Compare by name, not identity, because importlib may create a
-    # separate class object for FloorplanOptimizer.
     optimizer_class = None
-    for name in dir(module):
-        obj = getattr(module, name)
-        if (isinstance(obj, type) and
-                issubclass(obj, FloorplanOptimizer) and
-                obj.__name__ != 'FloorplanOptimizer'):
-            optimizer_class = obj
-            break
-    
-    # Fallback: try common class names (same as _load_optimizer)
+
+    for name in ['MyOptimizer', 'Optimizer', 'ContestOptimizer']:
+        if hasattr(module, name):
+            obj = getattr(module, name)
+            if (isinstance(obj, type) and
+                    issubclass(obj, FloorplanOptimizer) and
+                    obj.__name__ != 'FloorplanOptimizer' and
+                    getattr(obj, '__module__', None) == module.__name__):
+                optimizer_class = obj
+                break
+
     if optimizer_class is None:
-        for name in ['MyOptimizer', 'Optimizer', 'ContestOptimizer']:
-            if hasattr(module, name):
-                optimizer_class = getattr(module, name)
+        for name in dir(module):
+            obj = getattr(module, name)
+            if (isinstance(obj, type) and
+                    issubclass(obj, FloorplanOptimizer) and
+                    obj.__name__ != 'FloorplanOptimizer' and
+                    getattr(obj, '__module__', None) == module.__name__):
+                optimizer_class = obj
                 break
     
     if optimizer_class is None:

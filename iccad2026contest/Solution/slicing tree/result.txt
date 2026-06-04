@@ -1,0 +1,9 @@
+ICCAD 2026 no-runtime evaluation summary
+submission_name: my_optimizer
+timestamp: 2026-06-04T18:19:39.466218
+total_score: 3.9972
+tests: 100
+feasible: 100
+avg_cost: 3.8525
+avg_runtime_seconds: 0.3062
+results_json: D:\EDA\ICCAD\FloorSet\iccad2026contest\my_optimizer_results_no_runtime.json

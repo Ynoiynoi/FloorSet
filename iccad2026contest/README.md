@@ -246,6 +246,29 @@ This is useful for:
 
 ---
 
+## Visualizing One Solution
+
+Use `visualize_solution.py` to draw the layout image for one validation case:
+
+```bash
+# Draw from evaluation results JSON
+python visualize_solution.py --results-json my_optimizer_results.json --test-id 0
+
+# Draw from saved solutions JSON
+python visualize_solution.py --solutions-json my_optimizer_solutions.json --test-id 0
+
+# Run one optimizer on one case, then draw it
+python visualize_solution.py --optimizer my_optimizer.py --test-id 0 --with-reference
+```
+
+Optional switches:
+- `--with-reference`: draw the ground-truth layout beside your solution
+- `--draw-b2b`: overlay block-to-block nets
+- `--draw-p2b`: overlay pin-to-block nets
+- `--output out.png`: choose output image path
+
+---
+
 ## Scoring
 
 ```
