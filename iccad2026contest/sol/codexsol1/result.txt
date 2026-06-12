@@ -1,0 +1,18 @@
+ICCAD 2026 validation evaluation summary
+
+Optimizer:
+sol/codexsol1/my_optimizer.py
+
+Command:
+python iccad2026_evaluate.py --evaluate sol\codexsol1\my_optimizer.py --output sol\codexsol1\my_optimizer_results.json
+
+Results:
+- Total Score: 3.2786
+- Tests: 100
+- Feasible: 100
+- Avg Cost: 3.1565
+- Avg Runtime: 1.30s
+
+Artifact:
+- JSON: sol/codexsol1/my_optimizer_results.json
+- Raw log: sol/codexsol1/result_full_log.txt

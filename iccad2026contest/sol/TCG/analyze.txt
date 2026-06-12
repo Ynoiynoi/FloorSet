@@ -1,0 +1,17 @@
+Cost Contribution Analysis: my_optimizer
+test_cases: 100
+feasible: 100
+infeasible: 0
+hpwlgap: 1.068704
+areagap_bbox: 1.680468
+violationsrelative: 0.256344
+vboundary_over_nsoft: 0.227329
+vgrouping_over_nsoft: 0.029015
+vmib_over_nsoft: 0.000000
+quality_factor: 2.374586
+violation_multiplier: 1.683228
+avg_cost: 4.174150
+contest_total_score: 5.630159
+violation_fraction_boundary: 0.878194
+violation_fraction_grouping: 0.121806
+violation_fraction_mib: 0.000000

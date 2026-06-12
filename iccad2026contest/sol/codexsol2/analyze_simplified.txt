@@ -1,0 +1,22 @@
+Simplified-task summary (ignore HPWL, ignore boundary)
+
+cases: 100
+feasible: 100
+avg_Areagap_bbox: 0.810837
+sum_Vgrouping: 163
+sum_Vmib: 0
+sum_group_mib_capacity: 2075
+avg_weak_rel_per_case: 0.069920
+global_weak_rel: 0.078554
+
+Top 10 worst cases by weak_rel:
+- test_id=61, blocks=82, weak_rel=0.250000, area_gap=0.605048, Vg=6, Vm=0, cap=24
+- test_id=49, blocks=70, weak_rel=0.217391, area_gap=0.839106, Vg=5, Vm=0, cap=23
+- test_id=70, blocks=91, weak_rel=0.187500, area_gap=1.679730, Vg=6, Vm=0, cap=32
+- test_id=9, blocks=30, weak_rel=0.181818, area_gap=1.334655, Vg=2, Vm=0, cap=11
+- test_id=63, blocks=84, weak_rel=0.181818, area_gap=0.474141, Vg=4, Vm=0, cap=22
+- test_id=95, blocks=116, weak_rel=0.172414, area_gap=0.899001, Vg=5, Vm=0, cap=29
+- test_id=83, blocks=104, weak_rel=0.166667, area_gap=1.241626, Vg=4, Vm=0, cap=24
+- test_id=84, blocks=105, weak_rel=0.161290, area_gap=0.890739, Vg=5, Vm=0, cap=31
+- test_id=54, blocks=75, weak_rel=0.160000, area_gap=0.872341, Vg=4, Vm=0, cap=25
+- test_id=80, blocks=101, weak_rel=0.151515, area_gap=1.310104, Vg=5, Vm=0, cap=33

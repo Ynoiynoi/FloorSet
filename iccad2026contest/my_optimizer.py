@@ -1,45 +1,343 @@
 #!/usr/bin/env python3
 """
-ICCAD 2026 FloorSet Challenge optimizer.
+ICCAD 2026 FloorSet Challenge - Optimizer Template
 
-This implementation favors fast, deterministic construction over long local
-search.  It enforces all hard constraints by construction, preserves MIB shapes
-when possible, packs clustering constraints as connected mini-floorplans, and
-places boundary-constrained items on their requested outline edge.
+USAGE:
+  1. Copy: cp optimizer_template.py my_optimizer.py
+  2. Replace the B*-tree code with your algorithm
+  3. Test: python iccad2026_evaluate.py --evaluate my_optimizer.py
+
+BASELINE: B*-tree Simulated Annealing
+  - GUARANTEES: Overlap-free, area constraints satisfied
+  - NOT HANDLED: Fixed, preplaced, MIB, cluster, boundary constraints
+
+Your solve() receives:
+  - block_count: int
+  - area_targets: [n] target area per block
+  - b2b_connectivity: [edges, 3] (block_i, block_j, weight)
+  - p2b_connectivity: [edges, 3] (pin_idx, block_idx, weight)
+  - pins_pos: [n_pins, 2] pin (x, y)
+  - constraints: [n, 5] (fixed, preplaced, MIB, cluster, boundary)
+  - target_positions: [n, 4] target (x, y, w, h) per block.
+      All -1 by default (free). For fixed-shape blocks, w and h are set.
+      For preplaced blocks, all four (x, y, w, h) are set.
+
+Your solve() must return:
+  - List of (x, y, width, height), exactly block_count tuples
+  - Floating-point coordinates allowed
+  - Any aspect ratio (w/h) allowed
+
+HARD CONSTRAINTS (violation = Cost 10.0):
+  - NO OVERLAPS between blocks
+  - AREA: w*h within 1% of area_targets[i] (soft blocks only)
+  - DIMENSION IMMUTABILITY: Fixed-shape blocks must use exact (w, h) from
+    target_positions; preplaced blocks must use exact (x, y, w, h)
+
+RELAXED CONSTRAINTS:
+  - Aspect ratio: Any w/h ratio is valid
+  - Fixed outline: Removed (implicitly optimized via p2b HPWL and bbox area)
+  - Coordinates: Floating-point allowed
 """
 
 import math
+import random
 import sys
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import List, Tuple
 
 import torch
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from iccad2026_evaluate import FloorplanOptimizer
-from iccad2026_evaluate import calculate_bbox_area, calculate_hpwl_b2b, calculate_hpwl_p2b
+from iccad2026_evaluate import (
+    FloorplanOptimizer,
+    calculate_hpwl_b2b,
+    calculate_hpwl_p2b,
+    calculate_bbox_area,
+    check_overlap,
+)
 
 
-EPS = 1e-7
+# =============================================================================
+# B*-TREE DATA STRUCTURE
+# Replace this entire class if using a different representation
+# (Sequence Pair, O-tree, Corner Block List, etc.)
+# =============================================================================
+
+class BStarTree:
+    """
+    B*-tree for overlap-free floorplanning.
+    
+    Left child: placed to the RIGHT of parent
+    Right child: placed ABOVE parent (same x)
+    """
+    
+    def __init__(self, n_blocks: int, widths: List[float], heights: List[float]):
+        self.n = n_blocks
+        self.widths = list(widths)
+        self.heights = list(heights)
+        self.parent = [-1] * n_blocks
+        self.left = [-1] * n_blocks
+        self.right = [-1] * n_blocks
+        self.root = 0
+        self._build_random_tree()
+    
+    def _build_random_tree(self):
+        if self.n == 0:
+            return
+        self.parent = [-1] * self.n
+        self.left = [-1] * self.n
+        self.right = [-1] * self.n
+        
+        order = list(range(self.n))
+        random.shuffle(order)
+        self.root = order[0]
+        
+        for i in range(1, self.n):
+            block = order[i]
+            existing = order[random.randint(0, i - 1)]
+            if random.random() < 0.5:
+                if self.left[existing] == -1:
+                    self.left[existing] = block
+                    self.parent[block] = existing
+                elif self.right[existing] == -1:
+                    self.right[existing] = block
+                    self.parent[block] = existing
+                else:
+                    self._insert_at_leaf(block, existing)
+            else:
+                if self.right[existing] == -1:
+                    self.right[existing] = block
+                    self.parent[block] = existing
+                elif self.left[existing] == -1:
+                    self.left[existing] = block
+                    self.parent[block] = existing
+                else:
+                    self._insert_at_leaf(block, existing)
+    
+    def _insert_at_leaf(self, block: int, start: int):
+        current = start
+        while True:
+            if random.random() < 0.5:
+                if self.left[current] == -1:
+                    self.left[current] = block
+                    self.parent[block] = current
+                    return
+                current = self.left[current]
+            else:
+                if self.right[current] == -1:
+                    self.right[current] = block
+                    self.parent[block] = current
+                    return
+                current = self.right[current]
+    
+    def pack(self) -> List[Tuple[float, float, float, float]]:
+        """
+        Compute (x, y, w, h) from tree structure.
+        
+        Uses proper contour tracking to ensure overlap-free placement.
+        B*-tree rules:
+        - Left child: placed to the RIGHT of parent
+        - Right child: placed ABOVE parent (same x as parent)
+        """
+        positions = [(0.0, 0.0, self.widths[i], self.heights[i]) for i in range(self.n)]
+        if self.n == 0:
+            return positions
+        
+        # Contour: sorted list of (x_end, y_top) representing skyline
+        # At any x, the contour height is the y_top of the rightmost segment with x_end > x
+        contour = [(0.0, 0.0)]  # Start with ground level
+        
+        def get_contour_y(x_start: float, x_end: float) -> float:
+            """Find max y in contour for range [x_start, x_end]."""
+            max_y = 0.0
+            for i, (cx_end, cy_top) in enumerate(contour):
+                # Get x_start of this segment
+                cx_start = contour[i-1][0] if i > 0 else 0.0
+                # Check if segments overlap
+                if x_start < cx_end and x_end > cx_start:
+                    max_y = max(max_y, cy_top)
+            return max_y
+        
+        def update_contour(x_start: float, x_end: float, y_top: float):
+            """Add a new block to the contour."""
+            nonlocal contour
+            new_contour = []
+            
+            for i, (cx_end, cy_top) in enumerate(contour):
+                cx_start = contour[i-1][0] if i > 0 else 0.0
+                
+                # Before the new block
+                if cx_end <= x_start:
+                    new_contour.append((cx_end, cy_top))
+                # After the new block
+                elif cx_start >= x_end:
+                    new_contour.append((cx_end, cy_top))
+                # Overlapping - need to split
+                else:
+                    # Part before new block
+                    if cx_start < x_start:
+                        new_contour.append((x_start, cy_top))
+                    # Part after new block
+                    if cx_end > x_end:
+                        new_contour.append((cx_end, cy_top))
+            
+            # Add the new block segment
+            # Find where to insert
+            insert_pos = 0
+            for i, (cx_end, _) in enumerate(new_contour):
+                if cx_end <= x_start:
+                    insert_pos = i + 1
+            new_contour.insert(insert_pos, (x_end, y_top))
+            
+            # Sort by x_end and merge adjacent segments with same y
+            new_contour.sort(key=lambda x: x[0])
+            
+            # Merge adjacent segments with same height
+            merged = []
+            for x_end, y_top in new_contour:
+                if merged and merged[-1][1] == y_top:
+                    merged[-1] = (x_end, y_top)  # Extend previous
+                else:
+                    merged.append((x_end, y_top))
+            
+            contour = merged if merged else [(x_end, 0.0)]
+        
+        # DFS traversal to place blocks
+        def dfs(node: int, parent_right_edge: float):
+            if node == -1:
+                return
+            
+            w, h = self.widths[node], self.heights[node]
+            
+            if node == self.root:
+                x = 0.0
+                y = 0.0
+            else:
+                x = parent_right_edge
+                y = get_contour_y(x, x + w)
+            
+            positions[node] = (x, y, w, h)
+            update_contour(x, x + w, y + h)
+            
+            # Left child: to the RIGHT of this node
+            dfs(self.left[node], x + w)
+            # Right child: ABOVE this node (same x, will stack due to contour)
+            dfs(self.right[node], x)
+        
+        dfs(self.root, 0.0)
+        
+        # Verify no overlaps (should never happen with correct contour)
+        for i in range(self.n):
+            for j in range(i + 1, self.n):
+                x1, y1, w1, h1 = positions[i]
+                x2, y2, w2, h2 = positions[j]
+                overlap_x = min(x1 + w1, x2 + w2) - max(x1, x2)
+                overlap_y = min(y1 + h1, y2 + h2) - max(y1, y2)
+                if overlap_x > 1e-6 and overlap_y > 1e-6:
+                    # Fix by pushing j up
+                    positions[j] = (x2, max(y1 + h1, y2), w2, h2)
+        
+        return positions
+    
+    def copy(self) -> 'BStarTree':
+        new = BStarTree.__new__(BStarTree)
+        new.n = self.n
+        new.widths = self.widths.copy()
+        new.heights = self.heights.copy()
+        new.parent = self.parent.copy()
+        new.left = self.left.copy()
+        new.right = self.right.copy()
+        new.root = self.root
+        return new
+    
+    # SA moves
+    def move_rotate(self, block: int):
+        """Swap width/height (90° rotation, preserves area)."""
+        self.widths[block], self.heights[block] = self.heights[block], self.widths[block]
+    
+    def move_swap(self, b1: int, b2: int):
+        """Swap two blocks' dimensions."""
+        self.widths[b1], self.widths[b2] = self.widths[b2], self.widths[b1]
+        self.heights[b1], self.heights[b2] = self.heights[b2], self.heights[b1]
+    
+    def move_delete_insert(self, block: int):
+        """Delete and reinsert block at random position."""
+        if self.n <= 1:
+            return
+        w, h = self.widths[block], self.heights[block]
+        self._delete_node(block)
+        target = random.randint(0, self.n - 1)
+        while target == block:
+            target = random.randint(0, self.n - 1)
+        self._insert_node(block, target, random.choice([True, False]))
+        self.widths[block], self.heights[block] = w, h
+    
+    def _delete_node(self, node: int):
+        parent = self.parent[node]
+        left_child = self.left[node]
+        right_child = self.right[node]
+        
+        if left_child == -1 and right_child == -1:
+            replacement = -1
+        elif left_child == -1:
+            replacement = right_child
+        elif right_child == -1:
+            replacement = left_child
+        else:
+            replacement = left_child
+            rightmost = left_child
+            while self.right[rightmost] != -1:
+                rightmost = self.right[rightmost]
+            self.right[rightmost] = right_child
+            self.parent[right_child] = rightmost
+        
+        if parent == -1:
+            self.root = replacement
+        elif self.left[parent] == node:
+            self.left[parent] = replacement
+        else:
+            self.right[parent] = replacement
+        
+        if replacement != -1:
+            self.parent[replacement] = parent
+        
+        self.parent[node] = -1
+        self.left[node] = -1
+        self.right[node] = -1
+    
+    def _insert_node(self, node: int, target: int, as_left: bool):
+        if as_left:
+            old_child = self.left[target]
+            self.left[target] = node
+        else:
+            old_child = self.right[target]
+            self.right[target] = node
+        self.parent[node] = target
+        if old_child != -1:
+            self.left[node] = old_child
+            self.parent[old_child] = node
 
 
-@dataclass
-class Item:
-    blocks: List[int]
-    offsets: Dict[int, Tuple[float, float]]
-    width: float
-    height: float
-    fixed_anchor: Optional[Tuple[float, float]] = None
-    boundary_code: int = 0
-    preferred_center: Optional[Tuple[float, float]] = None
-
+# =============================================================================
+# OPTIMIZER CLASS - Replace this with your algorithm
+# =============================================================================
 
 class MyOptimizer(FloorplanOptimizer):
+    """
+    B*-tree Simulated Annealing baseline.
+    
+    REPLACE THIS CLASS WITH YOUR ALGORITHM.
+    Keep the solve() signature the same.
+    """
+    
     def __init__(self, verbose: bool = False):
         super().__init__(verbose)
-
+        self.initial_temp = 100.0
+        self.final_temp = 1.0
+        self.cooling_rate = 0.9
+        self.moves_per_temp = 20
+    
     def solve(
         self,
         block_count: int,
@@ -48,718 +346,74 @@ class MyOptimizer(FloorplanOptimizer):
         p2b_connectivity: torch.Tensor,
         pins_pos: torch.Tensor,
         constraints: torch.Tensor,
-        target_positions: torch.Tensor = None,
+        target_positions: torch.Tensor = None
     ) -> List[Tuple[float, float, float, float]]:
-        n = block_count
-        area = [float(area_targets[i]) if float(area_targets[i]) > 0 else 1.0 for i in range(n)]
-        cons = self._constraints_to_lists(constraints, n)
-
-        widths, heights = self._choose_dimensions(n, area, cons, target_positions)
-        items = self._build_items(n, widths, heights, cons, target_positions, p2b_connectivity, pins_pos)
-        outline_w, outline_h = self._estimate_outline(n, area, items, pins_pos, target_positions, cons)
-
-        anchors = self._place_items(items, outline_w, outline_h)
-
-        positions = [(0.0, 0.0, widths[i], heights[i]) for i in range(n)]
-        for item_idx, item in enumerate(items):
-            ax, ay = anchors[item_idx]
-            for b in item.blocks:
-                ox, oy = item.offsets[b]
-                positions[b] = (ax + ox, ay + oy, widths[b], heights[b])
-
-        # Exact hard constraints win over every heuristic.
-        if target_positions is not None:
-            for i in range(n):
-                if cons["preplaced"][i]:
-                    positions[i] = (
-                        float(target_positions[i, 0]),
-                        float(target_positions[i, 1]),
-                        float(target_positions[i, 2]),
-                        float(target_positions[i, 3]),
-                    )
-                elif cons["fixed"][i]:
-                    x, y, _, _ = positions[i]
-                    positions[i] = (
-                        x,
-                        y,
-                        float(target_positions[i, 2]),
-                        float(target_positions[i, 3]),
-                    )
-
-        if self._has_overlap(positions):
-            positions = self._repair_overlaps(positions, cons)
-
-        boundary_positions = self._postprocess_boundary(positions, cons)
-        if not self._has_overlap(boundary_positions):
-            boundary_positions = self._repair_overlaps(boundary_positions, cons)
-        if not self._has_overlap(boundary_positions) and self._accept_boundary_candidate(
-            positions, boundary_positions, cons, b2b_connectivity, p2b_connectivity, pins_pos
-        ):
-            return boundary_positions
-        return positions
-
-    def _constraints_to_lists(self, constraints: torch.Tensor, n: int) -> Dict[str, List[int]]:
-        if constraints is None or constraints.numel() == 0:
-            cols = 0
-        else:
-            cols = constraints.shape[1] if constraints.dim() > 1 else 0
-
-        def col(idx: int) -> List[int]:
-            if cols <= idx:
-                return [0] * n
-            return [int(float(constraints[i, idx])) for i in range(n)]
-
-        return {
-            "fixed": col(0),
-            "preplaced": col(1),
-            "mib": col(2),
-            "cluster": col(3),
-            "boundary": col(4),
-        }
-
-    def _choose_dimensions(
-        self,
-        n: int,
-        area: List[float],
-        cons: Dict[str, List[int]],
-        target_positions: Optional[torch.Tensor],
-    ) -> Tuple[List[float], List[float]]:
-        widths = [math.sqrt(max(a, 1.0)) for a in area]
-        heights = [math.sqrt(max(a, 1.0)) for a in area]
-
-        if target_positions is not None:
-            for i in range(n):
-                if cons["fixed"][i] or cons["preplaced"][i]:
-                    widths[i] = float(target_positions[i, 2])
-                    heights[i] = float(target_positions[i, 3])
-
-        groups = self._groups(cons["mib"])
-        for members in groups.values():
-            fixed_ref = next((i for i in members if cons["fixed"][i] or cons["preplaced"][i]), None)
-            if fixed_ref is not None:
-                w, h = widths[fixed_ref], heights[fixed_ref]
+        """
+        B*-tree SA optimization.
+        
+        REPLACE THIS METHOD with your algorithm.
+        Must return List[(x, y, w, h)] with exactly block_count entries.
+        """
+        # Initialize dimensions: use target dimensions for fixed/preplaced
+        # blocks, otherwise start with a square matching the area target.
+        widths, heights = [], []
+        for i in range(block_count):
+            if (target_positions is not None and
+                    target_positions[i, 2] != -1 and target_positions[i, 3] != -1):
+                w = float(target_positions[i, 2])
+                h = float(target_positions[i, 3])
             else:
-                # MIB members in FloorSet-Lite use the same target area.
-                a = max(area[members[0]], 1.0)
-                w = h = math.sqrt(a)
-            for i in members:
-                if not (cons["fixed"][i] or cons["preplaced"][i]):
-                    widths[i], heights[i] = w, h
-
-        return widths, heights
-
-    def _build_items(
-        self,
-        n: int,
-        widths: List[float],
-        heights: List[float],
-        cons: Dict[str, List[int]],
-        target_positions: Optional[torch.Tensor],
-        p2b_connectivity: torch.Tensor,
-        pins_pos: torch.Tensor,
-    ) -> List[Item]:
-        assigned = set()
-        items: List[Item] = []
-        pin_centers = self._pin_preferred_centers(n, p2b_connectivity, pins_pos)
-
-        for _, members in sorted(self._groups(cons["cluster"]).items()):
-            members = self._cluster_order(members, cons, target_positions)
-            bcode = self._item_boundary_code(members, cons)
-            offsets: Dict[int, Tuple[float, float]] = {}
-            x_cursor = 0.0
-            max_h = 0.0
-            for b in members:
-                offsets[b] = (x_cursor, 0.0)
-                x_cursor += widths[b]
-                max_h = max(max_h, heights[b])
-
-            fixed_anchor = None
-            if target_positions is not None:
-                pre = next((b for b in members if cons["preplaced"][b]), None)
-                if pre is not None:
-                    ox, oy = offsets[pre]
-                    fixed_anchor = (float(target_positions[pre, 0]) - ox, float(target_positions[pre, 1]) - oy)
-
-            pref = self._average_center([pin_centers[b] for b in members if pin_centers[b] is not None])
-            items.append(Item(members, offsets, x_cursor, max_h, fixed_anchor, bcode, pref))
-            assigned.update(members)
-
-        for b in range(n):
-            if b in assigned:
-                continue
-            fixed_anchor = None
-            if target_positions is not None and cons["preplaced"][b]:
-                fixed_anchor = (float(target_positions[b, 0]), float(target_positions[b, 1]))
-            items.append(
-                Item(
-                    [b],
-                    {b: (0.0, 0.0)},
-                    widths[b],
-                    heights[b],
-                    fixed_anchor,
-                    cons["boundary"][b],
-                    pin_centers[b],
-                )
-            )
-
-        return items
-
-    def _cluster_order(
-        self,
-        members: List[int],
-        cons: Dict[str, List[int]],
-        target_positions: Optional[torch.Tensor],
-    ) -> List[int]:
-        if target_positions is None:
-            return members
-        pre = [b for b in members if cons["preplaced"][b]]
-        rest = [b for b in members if not cons["preplaced"][b]]
-        # Keep preplaced blocks first so their cluster anchor rarely goes negative.
-        pre.sort(key=lambda b: (float(target_positions[b, 0]), float(target_positions[b, 1])))
-        return pre + rest
-
-    def _item_boundary_code(self, members: Iterable[int], cons: Dict[str, List[int]]) -> int:
-        codes = [cons["boundary"][b] for b in members if cons["boundary"][b] != 0]
-        if not codes:
-            return 0
-        # If a group asks for several different edges, choosing the most common
-        # one usually satisfies at least one block without sacrificing grouping.
-        return max(set(codes), key=codes.count)
-
-    def _pin_preferred_centers(
-        self,
-        n: int,
-        p2b_connectivity: torch.Tensor,
-        pins_pos: torch.Tensor,
-    ) -> List[Optional[Tuple[float, float]]]:
-        sums = [[0.0, 0.0, 0.0] for _ in range(n)]
-        if p2b_connectivity is not None:
-            for edge in p2b_connectivity:
-                if len(edge) < 3 or int(edge[0]) < 0:
-                    continue
-                pin_idx, block_idx, weight = int(edge[0]), int(edge[1]), float(edge[2])
-                if 0 <= block_idx < n and 0 <= pin_idx < len(pins_pos) and weight > 0:
-                    px, py = float(pins_pos[pin_idx, 0]), float(pins_pos[pin_idx, 1])
-                    if px >= 0 and py >= 0:
-                        sums[block_idx][0] += weight * px
-                        sums[block_idx][1] += weight * py
-                        sums[block_idx][2] += weight
-
-        centers: List[Optional[Tuple[float, float]]] = []
-        for sx, sy, sw in sums:
-            centers.append((sx / sw, sy / sw) if sw > 0 else None)
-        return centers
-
-    def _average_center(self, centers: List[Tuple[float, float]]) -> Optional[Tuple[float, float]]:
-        if not centers:
-            return None
-        return (
-            sum(c[0] for c in centers) / len(centers),
-            sum(c[1] for c in centers) / len(centers),
-        )
-
-    def _estimate_outline(
-        self,
-        n: int,
-        area: List[float],
-        items: List[Item],
-        pins_pos: torch.Tensor,
-        target_positions: Optional[torch.Tensor],
-        cons: Dict[str, List[int]],
-    ) -> Tuple[float, float]:
-        total_area = sum(area)
-        pin_w = pin_h = 0.0
-        if pins_pos is not None and pins_pos.numel() > 0:
-            valid = pins_pos[(pins_pos[:, 0] >= 0) & (pins_pos[:, 1] >= 0)]
-            if len(valid) > 0:
-                pin_w = float(valid[:, 0].max()) / 1.10
-                pin_h = float(valid[:, 1].max()) / 1.10
-
-        if pin_w <= 0 or pin_h <= 0:
-            side = math.sqrt(max(total_area, 1.0))
-            pin_w = side
-            pin_h = side
-
-        if target_positions is not None:
-            for i in range(n):
-                if cons["preplaced"][i]:
-                    pin_w = max(pin_w, float(target_positions[i, 0] + target_positions[i, 2]))
-                    pin_h = max(pin_h, float(target_positions[i, 1] + target_positions[i, 3]))
-
-        width = max(pin_w, max(item.width for item in items), 1.0)
-        height = max(pin_h, max(item.height for item in items), 1.0)
-        required = max(total_area * 1.08, sum(item.width * item.height for item in items) * 1.02)
-        if width * height < required:
-            scale = math.sqrt(required / max(width * height, 1.0))
-            width *= scale
-            height *= scale
-        return width, height
-
-    def _place_items(self, items: List[Item], outline_w: float, outline_h: float) -> Dict[int, Tuple[float, float]]:
-        placed: List[Tuple[float, float, float, float, int]] = []
-        anchors: Dict[int, Tuple[float, float]] = {}
-
-        fixed_order = [i for i, item in enumerate(items) if item.fixed_anchor is not None]
-        free_order = [i for i, item in enumerate(items) if item.fixed_anchor is None]
-        free_order.sort(key=lambda i: self._priority(items[i]), reverse=True)
-
-        for idx in fixed_order:
-            item = items[idx]
-            ax, ay = item.fixed_anchor or (0.0, 0.0)
-            anchors[idx] = (ax, ay)
-            placed.append((ax, ay, item.width, item.height, idx))
-
-        for idx in free_order:
-            item = items[idx]
-            ax, ay = self._find_position(item, placed, outline_w, outline_h)
-            anchors[idx] = (ax, ay)
-            placed.append((ax, ay, item.width, item.height, idx))
-
-        return anchors
-
-    def _priority(self, item: Item) -> float:
-        boundary = 10_000.0 if item.boundary_code else 0.0
-        return boundary + item.width * item.height + 10.0 * len(item.blocks)
-
-    def _find_position(
-        self,
-        item: Item,
-        placed: List[Tuple[float, float, float, float, int]],
-        outline_w: float,
-        outline_h: float,
-    ) -> Tuple[float, float]:
-        xs = {0.0}
-        ys = {0.0}
-        for x, y, w, h, _ in placed:
-            xs.add(x + w)
-            xs.add(max(0.0, x - item.width))
-            ys.add(y + h)
-            ys.add(max(0.0, y - item.height))
-
-        if item.preferred_center is not None:
-            cx, cy = item.preferred_center
-            xs.add(max(0.0, cx - item.width / 2.0))
-            ys.add(max(0.0, cy - item.height / 2.0))
-
-        if item.boundary_code & 1:
-            xs = {0.0}
-        elif item.boundary_code & 2:
-            xs = {max(0.0, outline_w - item.width)}
-        else:
-            xs.add(max(0.0, outline_w - item.width))
-
-        if item.boundary_code & 8:
-            ys = {0.0}
-        elif item.boundary_code & 4:
-            ys = {max(0.0, outline_h - item.height)}
-        else:
-            ys.add(max(0.0, outline_h - item.height))
-
-        x_values = sorted(xs)
-        y_values = sorted(ys)
-        if len(x_values) > 80:
-            x_values = self._trim_axis_candidates(x_values, item, axis=0)
-        if len(y_values) > 80:
-            y_values = self._trim_axis_candidates(y_values, item, axis=1)
-
-        candidates = []
-        if item.boundary_code & (4 | 8):
-            # Top/bottom constraints fix y; scan likely x anchors along that edge.
-            fixed_y = next(iter(ys))
-            candidates.extend((x, fixed_y) for x in x_values)
-        elif item.boundary_code & (1 | 2):
-            # Left/right constraints fix x; scan likely y anchors along that edge.
-            fixed_x = next(iter(xs))
-            candidates.extend((fixed_x, y) for y in y_values)
-        else:
-            candidates.extend((x, self._lowest_nonoverlap_y(x, item.width, item.height, placed)) for x in x_values)
-
-        # A few 2-D candidates help with dense preplaced obstacles without going
-        # back to the expensive full Cartesian product.
-        if item.boundary_code == 0 and len(placed) < 80:
-            candidates.extend((x, y) for x in x_values[:24] for y in y_values[:24])
-
-        seen = set()
-        unique_candidates = []
-        for x, y in candidates:
-            key = (round(x, 6), round(y, 6))
-            if key not in seen:
-                seen.add(key)
-                unique_candidates.append((x, y))
-
-        best = None
-        best_score = float("inf")
-        for x, y in unique_candidates:
-            rect = (x, y, item.width, item.height)
-            if self._rect_overlaps_any(rect, placed):
-                continue
-            score = self._placement_score(item, rect, placed, outline_w, outline_h)
-            if score < best_score:
-                best_score = score
-                best = (x, y)
-
-        if best is not None:
-            return best
-
-        # Guaranteed fallback: append above the current layout.  This keeps the
-        # solution feasible even for dense preplaced obstacles.
-        y = 0.0 if not placed else max(py + ph for _, py, _, ph, _ in placed)
-        x = 0.0
-        if item.boundary_code & 2:
-            x = max(0.0, outline_w - item.width)
-        if item.boundary_code & 4:
-            y = max(y, outline_h - item.height)
-        return x, y
-
-    def _trim_axis_candidates(self, values: List[float], item: Item, axis: int) -> List[float]:
-        keep = set(values[:20])
-        keep.update(values[-12:])
-        if item.preferred_center is not None:
-            target = item.preferred_center[axis] - (item.width if axis == 0 else item.height) / 2.0
-            ranked = sorted(values, key=lambda v: abs(v - target))
-            keep.update(ranked[:48])
-        else:
-            keep.update(values[:68])
-        return sorted(keep)
-
-    def _lowest_nonoverlap_y(
-        self,
-        x: float,
-        width: float,
-        height: float,
-        placed: List[Tuple[float, float, float, float, int]],
-    ) -> float:
-        y = 0.0
-        for _ in range(len(placed) + 1):
-            next_y = y
-            for px, py, pw, ph, _ in placed:
-                if min(x + width, px + pw) - max(x, px) > 1e-6:
-                    if min(y + height, py + ph) - max(y, py) > 1e-6:
-                        next_y = max(next_y, py + ph)
-            if next_y <= y + 1e-9:
-                return y
-            y = next_y
-        return y
-
-    def _placement_score(
-        self,
-        item: Item,
-        rect: Tuple[float, float, float, float],
-        placed: List[Tuple[float, float, float, float, int]],
-        outline_w: float,
-        outline_h: float,
-    ) -> float:
-        x, y, w, h = rect
-        overflow = max(0.0, x + w - outline_w) + max(0.0, y + h - outline_h)
-        pref = 0.0
-        if item.preferred_center is not None:
-            cx, cy = item.preferred_center
-            pref = abs((x + w / 2.0) - cx) + abs((y + h / 2.0) - cy)
-
-        all_rects = placed + [(x, y, w, h, -1)]
-        xmin = min(r[0] for r in all_rects)
-        ymin = min(r[1] for r in all_rects)
-        xmax = max(r[0] + r[2] for r in all_rects)
-        ymax = max(r[1] + r[3] for r in all_rects)
-        bbox_area = (xmax - xmin) * (ymax - ymin)
-        edge_bonus = 0.0
-        if item.boundary_code:
-            edge_bonus -= 100.0
-        return overflow * 1_000_000.0 + pref * 0.18 + bbox_area * 0.04 + y * 0.1 + x * 0.01 + edge_bonus
-
-    def _rect_overlaps_any(
-        self,
-        rect: Tuple[float, float, float, float],
-        placed: List[Tuple[float, float, float, float, int]],
-    ) -> bool:
-        x, y, w, h = rect
-        for px, py, pw, ph, _ in placed:
-            if min(x + w, px + pw) - max(x, px) > 1e-6 and min(y + h, py + ph) - max(y, py) > 1e-6:
-                return True
-        return False
-
-    def _groups(self, values: List[int]) -> Dict[int, List[int]]:
-        groups: Dict[int, List[int]] = {}
-        for i, g in enumerate(values):
-            if g:
-                groups.setdefault(g, []).append(i)
-        return groups
-
-    def _has_overlap(self, positions: List[Tuple[float, float, float, float]]) -> bool:
-        n = len(positions)
-        for i in range(n):
-            x1, y1, w1, h1 = positions[i]
-            for j in range(i + 1, n):
-                x2, y2, w2, h2 = positions[j]
-                if min(x1 + w1, x2 + w2) - max(x1, x2) > 1e-6 and min(y1 + h1, y2 + h2) - max(y1, y2) > 1e-6:
-                    return True
-        return False
-
-    def _postprocess_boundary(
-        self,
-        positions: List[Tuple[float, float, float, float]],
-        cons: Dict[str, List[int]],
-    ) -> List[Tuple[float, float, float, float]]:
-        boundary_blocks = [
-            i for i, code in enumerate(cons["boundary"])
-            if code != 0 and not cons["preplaced"][i]
-        ]
-        if not boundary_blocks:
-            return positions
-
-        xmin = min(x for x, _, _, _ in positions)
-        ymin = min(y for _, y, _, _ in positions)
-        xmax = max(x + w for x, _, w, _ in positions)
-        ymax = max(y + h for _, y, _, h in positions)
-        base_w = xmax - xmin
-        base_h = ymax - ymin
-
-        left_blocks = [i for i in boundary_blocks if cons["boundary"][i] & 1]
-        right_blocks = [i for i in boundary_blocks if cons["boundary"][i] & 2]
-        top_blocks = [i for i in boundary_blocks if cons["boundary"][i] & 4]
-        bottom_blocks = [i for i in boundary_blocks if cons["boundary"][i] & 8]
-
-        left_w = max((positions[i][2] for i in left_blocks), default=0.0)
-        right_w = max((positions[i][2] for i in right_blocks), default=0.0)
-        top_h = max((positions[i][3] for i in top_blocks), default=0.0)
-        bottom_h = max((positions[i][3] for i in bottom_blocks), default=0.0)
-
-        min_h = max(
-            base_h + top_h + bottom_h,
-            sum(positions[i][3] for i in left_blocks),
-            sum(positions[i][3] for i in right_blocks),
-            1.0,
-        )
-        min_w = max(
-            base_w + left_w + right_w,
-            sum(positions[i][2] for i in top_blocks),
-            sum(positions[i][2] for i in bottom_blocks),
-            1.0,
-        )
-
-        new_xmin = xmin - left_w
-        new_ymin = ymin - bottom_h
-        new_xmax = new_xmin + min_w
-        new_ymax = new_ymin + min_h
-
-        result = list(positions)
-        assigned = set()
-
-        def reserve_corner(blocks: List[int], x: float, y_func) -> float:
-            if not blocks:
-                return 0.0
-            blocks.sort(key=lambda b: positions[b][2] * positions[b][3], reverse=True)
-            first = blocks[0]
-            _, _, w, h = positions[first]
-            result[first] = (x if x is not None else result[first][0], y_func(h), w, h)
-            assigned.add(first)
-            return h
-
-        left_top = [i for i in left_blocks if cons["boundary"][i] & 4]
-        left_bottom = [i for i in left_blocks if cons["boundary"][i] & 8]
-        right_top = [i for i in right_blocks if cons["boundary"][i] & 4]
-        right_bottom = [i for i in right_blocks if cons["boundary"][i] & 8]
-
-        lt_h = reserve_corner(left_top, new_xmin, lambda h: new_ymax - h)
-        lb_h = reserve_corner(left_bottom, new_xmin, lambda h: new_ymin)
-        rt_h = reserve_corner(right_top, None, lambda h: new_ymax - h)
-        if right_top:
-            b = right_top[0]
-            x, y, w, h = result[b]
-            result[b] = (new_xmax - w, y, w, h)
-        rb_h = reserve_corner(right_bottom, None, lambda h: new_ymin)
-        if right_bottom:
-            b = right_bottom[0]
-            x, y, w, h = result[b]
-            result[b] = (new_xmax - w, y, w, h)
-
-        y_cursor = new_ymin + lb_h
-        y_limit = new_ymax - lt_h
-        for i in sorted(left_blocks, key=lambda b: positions[b][3], reverse=True):
-            if i in assigned:
-                continue
-            _, _, w, h = positions[i]
-            if y_cursor + h > y_limit:
-                y_cursor = new_ymin
-            result[i] = (new_xmin, y_cursor, w, h)
-            assigned.add(i)
-            y_cursor += h
-
-        y_cursor = new_ymin + rb_h
-        y_limit = new_ymax - rt_h
-        for i in sorted(right_blocks, key=lambda b: positions[b][3], reverse=True):
-            if i in assigned:
-                continue
-            _, _, w, h = positions[i]
-            if y_cursor + h > y_limit:
-                y_cursor = new_ymin
-            result[i] = (new_xmax - w, y_cursor, w, h)
-            assigned.add(i)
-            y_cursor += h
-
-        x_start = new_xmin + left_w
-        x_end = new_xmax - right_w
-
-        x_cursor = x_start
-        for i in sorted(top_blocks, key=lambda b: positions[b][2], reverse=True):
-            if i in assigned:
-                continue
-            _, _, w, h = positions[i]
-            if x_cursor + w > x_end:
-                x_cursor = x_start
-            result[i] = (x_cursor, new_ymax - h, w, h)
-            assigned.add(i)
-            x_cursor += w
-
-        x_cursor = x_start
-        for i in sorted(bottom_blocks, key=lambda b: positions[b][2], reverse=True):
-            if i in assigned:
-                continue
-            _, _, w, h = positions[i]
-            if x_cursor + w > x_end:
-                x_cursor = x_start
-            result[i] = (x_cursor, new_ymin, w, h)
-            assigned.add(i)
-            x_cursor += w
-
-        if self._has_overlap(result):
-            return positions
-        return result
-
-    def _proxy_cost(
-        self,
-        positions: List[Tuple[float, float, float, float]],
-        cons: Dict[str, List[int]],
-        b2b_connectivity: torch.Tensor,
-        p2b_connectivity: torch.Tensor,
-        pins_pos: torch.Tensor,
-    ) -> float:
-        hpwl = calculate_hpwl_b2b(positions, b2b_connectivity) + calculate_hpwl_p2b(positions, p2b_connectivity, pins_pos)
+                area = float(area_targets[i]) if area_targets[i] > 0 else 1.0
+                w = h = math.sqrt(area)
+            widths.append(w)
+            heights.append(h)
+        
+        # Build B*-tree
+        tree = BStarTree(block_count, widths, heights)
+        current_positions = tree.pack()
+        current_cost = self._cost(current_positions, b2b_connectivity, p2b_connectivity, pins_pos)
+        
+        best_tree = tree.copy()
+        best_positions = current_positions
+        best_cost = current_cost
+        
+        # Simulated Annealing
+        temp = self.initial_temp
+        while temp > self.final_temp:
+            for _ in range(self.moves_per_temp):
+                old_tree = tree.copy()
+                
+                # Random move (only rotate and delete-insert to preserve area)
+                move = random.randint(0, 1)
+                if move == 0:
+                    # Rotate: swap w/h (preserves area w*h)
+                    tree.move_rotate(random.randint(0, block_count - 1))
+                else:
+                    # Delete-insert: move block to new tree position (preserves area)
+                    tree.move_delete_insert(random.randint(0, block_count - 1))
+                
+                new_positions = tree.pack()
+                new_cost = self._cost(new_positions, b2b_connectivity, p2b_connectivity, pins_pos)
+                
+                # Accept/reject
+                delta = new_cost - current_cost
+                if delta < 0 or random.random() < math.exp(-delta / temp):
+                    current_positions = new_positions
+                    current_cost = new_cost
+                    if current_cost < best_cost:
+                        best_cost = current_cost
+                        best_positions = new_positions
+                        best_tree = tree.copy()
+                else:
+                    tree = old_tree
+            
+            temp *= self.cooling_rate
+        
+        return best_positions
+    
+    def _cost(self, positions, b2b_conn, p2b_conn, pins_pos) -> float:
+        """Evaluate solution quality (lower is better)."""
+        hpwl_b2b = calculate_hpwl_b2b(positions, b2b_conn)
+        hpwl_p2b = calculate_hpwl_p2b(positions, p2b_conn, pins_pos)
         area = calculate_bbox_area(positions)
-        boundary, grouping, mib, n_soft = self._soft_violations_fast(positions, cons)
-        vrel = (boundary + grouping + mib) / max(n_soft, 1)
-        return (1.0 + 0.002 * hpwl + 0.01 * area) * math.exp(2.0 * vrel)
-
-    def _accept_boundary_candidate(
-        self,
-        before: List[Tuple[float, float, float, float]],
-        after: List[Tuple[float, float, float, float]],
-        cons: Dict[str, List[int]],
-        b2b_connectivity: torch.Tensor,
-        p2b_connectivity: torch.Tensor,
-        pins_pos: torch.Tensor,
-    ) -> bool:
-        b0, g0, m0, n0 = self._soft_violations_fast(before, cons)
-        b1, g1, m1, n1 = self._soft_violations_fast(after, cons)
-        soft0 = b0 + g0 + m0
-        soft1 = b1 + g1 + m1
-        if soft1 >= soft0:
-            return False
-
-        area0 = calculate_bbox_area(before)
-        area1 = calculate_bbox_area(after)
-        area_ratio = area1 / max(area0, 1.0)
-        if area_ratio > 1.22 and soft0 - soft1 < max(3, int(0.12 * max(n0, n1))):
-            return False
-
-        # Fall back to a cheap weighted proxy for close calls.
-        return self._proxy_cost(after, cons, b2b_connectivity, p2b_connectivity, pins_pos) < (
-            self._proxy_cost(before, cons, b2b_connectivity, p2b_connectivity, pins_pos) * 0.97
-        )
-
-    def _soft_violations_fast(
-        self,
-        positions: List[Tuple[float, float, float, float]],
-        cons: Dict[str, List[int]],
-    ) -> Tuple[int, int, int, int]:
-        n = len(positions)
-        boundary = 0
-        grouping = 0
-        mib = 0
-        n_soft = sum(1 for c in cons["boundary"][:n] if c)
-
-        mib_groups = self._groups(cons["mib"][:n])
-        for members in mib_groups.values():
-            n_soft += max(0, len(members) - 1)
-            shapes = {(round(positions[i][2], 4), round(positions[i][3], 4)) for i in members}
-            mib += max(0, len(shapes) - 1)
-
-        cluster_groups = self._groups(cons["cluster"][:n])
-        for members in cluster_groups.values():
-            n_soft += max(0, len(members) - 1)
-            grouping += max(0, self._component_count(members, positions) - 1)
-
-        xmin = min(x for x, _, _, _ in positions)
-        ymin = min(y for _, y, _, _ in positions)
-        xmax = max(x + w for x, _, w, _ in positions)
-        ymax = max(y + h for _, y, _, h in positions)
-        for i, code in enumerate(cons["boundary"][:n]):
-            if not code:
-                continue
-            x, y, w, h = positions[i]
-            touches = {
-                1: abs(x - xmin) < 1e-6,
-                2: abs(x + w - xmax) < 1e-6,
-                4: abs(y + h - ymax) < 1e-6,
-                8: abs(y - ymin) < 1e-6,
-            }
-            if not all(touches[bit] for bit in (1, 2, 4, 8) if code & bit):
-                boundary += 1
-
-        return boundary, grouping, mib, n_soft
-
-    def _component_count(
-        self,
-        members: List[int],
-        positions: List[Tuple[float, float, float, float]],
-    ) -> int:
-        parent = {i: i for i in members}
-
-        def find(a: int) -> int:
-            while parent[a] != a:
-                parent[a] = parent[parent[a]]
-                a = parent[a]
-            return a
-
-        def union(a: int, b: int) -> None:
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[rb] = ra
-
-        for idx, a in enumerate(members):
-            ax, ay, aw, ah = positions[a]
-            for b in members[idx + 1:]:
-                bx, by, bw, bh = positions[b]
-                vertical_touch = abs(ax + aw - bx) < 1e-6 or abs(bx + bw - ax) < 1e-6
-                vertical_overlap = min(ay + ah, by + bh) - max(ay, by) > 1e-6
-                horizontal_touch = abs(ay + ah - by) < 1e-6 or abs(by + bh - ay) < 1e-6
-                horizontal_overlap = min(ax + aw, bx + bw) - max(ax, bx) > 1e-6
-                if (vertical_touch and vertical_overlap) or (horizontal_touch and horizontal_overlap):
-                    union(a, b)
-
-        return len({find(i) for i in members})
-
-    def _repair_overlaps(
-        self,
-        positions: List[Tuple[float, float, float, float]],
-        cons: Dict[str, List[int]],
-    ) -> List[Tuple[float, float, float, float]]:
-        repaired = list(positions)
-        for _ in range(20):
-            changed = False
-            for i in range(len(repaired)):
-                x1, y1, w1, h1 = repaired[i]
-                for j in range(i + 1, len(repaired)):
-                    x2, y2, w2, h2 = repaired[j]
-                    ox = min(x1 + w1, x2 + w2) - max(x1, x2)
-                    oy = min(y1 + h1, y2 + h2) - max(y1, y2)
-                    if ox > 1e-6 and oy > 1e-6:
-                        movable = j if not cons["preplaced"][j] else i
-                        if cons["preplaced"][movable]:
-                            continue
-                        mx, my, mw, mh = repaired[movable]
-                        repaired[movable] = (mx, max(y1 + h1, y2 + h2), mw, mh)
-                        changed = True
-            if not changed:
-                break
-        return repaired
+        return hpwl_b2b + hpwl_p2b + area * 0.01

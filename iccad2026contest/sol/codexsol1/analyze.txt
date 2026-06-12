@@ -1,0 +1,38 @@
+ICCAD 2026 cost contribution summary
+
+Optimizer:
+sol/codexsol1/my_optimizer.py
+
+Command:
+python analyze_cost_contributions.py --evaluate sol\codexsol1\my_optimizer.py
+
+Summary:
+- num_cases: 100
+- num_feasible: 100
+- avg_block_count: 70.5000
+- avg_runtime_seconds: 1.2702
+
+Primary metrics:
+- avg_HPWLgap: 0.864758
+- avg_Areagap_bbox: 0.810837
+- avg_Violationsrelative: 0.257186
+
+Violation components:
+- avg_Vfixed: 0.130000
+- avg_Vpreplaced: 0.000000
+- avg_Vgrouping: 1.630000
+- avg_Vboundary: 9.790000
+- avg_Vmib: 0.000000
+- avg_total_soft_violations: 11.420000
+- avg_max_possible_violations: 44.780000
+
+Derived no-runtime cost terms:
+- avg_hpwl_term: 0.432379
+- avg_area_term: 0.405418
+- avg_quality_factor: 1.837798
+- avg_violation_factor: 1.707270
+- avg_cost_no_runtime: 3.156524
+- weighted_total_score_no_runtime: 3.278600
+
+Artifacts:
+- Raw log: sol/codexsol1/analyze_full_log.txt

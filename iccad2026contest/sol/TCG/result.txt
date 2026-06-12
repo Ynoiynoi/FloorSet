@@ -1,0 +1,9 @@
+submission_name: my_optimizer
+timestamp: 2026-06-11T17:24:30.633815
+total_score: 4.148313
+num_tests: 100
+num_feasible: 100
+num_infeasible: 0
+avg_cost: 4.012213
+avg_runtime: 1.284538
+details_json: d:\EDA\ICCAD2\FloorSet\iccad2026contest\sol\TCG\eval_result.json

@@ -1,0 +1,39 @@
+ICCAD 2026 cost contribution summary
+
+Optimizer:
+sol/codexsol2/my_optimizer.py
+
+Command:
+python analyze_cost_contributions.py sol/codexsol2/my_optimizer.py --output sol/codexsol2/analyze_report.txt
+
+Summary:
+- num_cases: 100
+- num_feasible: 100
+- num_infeasible: 0
+
+Primary metrics:
+- avg_HPWLgap: 0.864758
+- avg_Areagap_bbox: 0.810837
+- avg_Violationsrelative: 0.257186
+
+Violation components:
+- avg_Vboundary_over_Nsoft: 0.224457
+- avg_Vgrouping_over_Nsoft: 0.032729
+- avg_Vmib_over_Nsoft: 0.000000
+
+Derived terms:
+- avg_quality_factor: 1.837798
+- avg_violation_multiplier: 1.707270
+- avg_cost: 3.136176
+- contest_total_score: 4.208331
+
+Violation totals:
+- sum_Vboundary: 979
+- sum_Vgrouping: 163
+- sum_Vmib: 0
+- sum_total_soft: 1142
+- sum_Nsoft: 4478
+
+Artifacts:
+- Report: sol/codexsol2/analyze_report.txt
+- Raw log: sol/codexsol2/analyze_full_log.txt
