@@ -1,0 +1,19 @@
+{
+  "seed": 11,
+  "modules": 40,
+  "nets": 68,
+  "fixed_modules": 8,
+  "movable_modules": 32,
+  "outline_w": 101.55755600787137,
+  "outline_h": 101.55755600787138,
+  "hpwl_initial": 6742.953168516626,
+  "hpwl_global": 6868.116574231381,
+  "hpwl_final": 6590.15196156178,
+  "overlap_initial": 693.1597409156814,
+  "overlap_global": 15.570341533369552,
+  "overlap_final": 5.317807323702455e-13,
+  "hcg_edges": 419,
+  "vcg_edges": 361,
+  "visualization": "output_obstacle\\pef_obstacle_floorplan.png",
+  "final_image": "output_obstacle\\pef_obstacle_floorplan_final.png"
+}

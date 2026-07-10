@@ -1,0 +1,81 @@
+========================================================================
+  Cost Contribution Analysis: my_optimizer
+========================================================================
+
+  Test cases evaluated : 100
+  Feasible             : 100
+  Infeasible           : 0
+
+────────────────────────────────────────────────────────────────────────
+  AVERAGE METRICS (all cases)
+────────────────────────────────────────────────────────────────────────
+
+  HPWLgap               = 0.807605
+  Areagap_bbox          = 0.142459
+  Violationsrelative    = 0.129294
+    ├─ Vboundary/Nsoft  = 0.028333
+    ├─ Vgrouping/Nsoft  = 0.100961
+    └─ Vmib/Nsoft       = 0.000000
+
+  Quality factor        = 1.475032  (1 + α·(HPWLgap + Areagap))
+  Violation multiplier  = 1.301098  (exp(β·Vrel))
+  Avg Cost              = 1.914896
+  Contest Total Score   = 2.047389  (exp-weighted)
+
+────────────────────────────────────────────────────────────────────────
+  AVERAGE METRICS (feasible cases only)
+────────────────────────────────────────────────────────────────────────
+
+  HPWLgap               = 0.807605
+  Areagap_bbox          = 0.142459
+  Violationsrelative    = 0.129294
+    ├─ Vboundary/Nsoft  = 0.028333
+    ├─ Vgrouping/Nsoft  = 0.100961
+    └─ Vmib/Nsoft       = 0.000000
+  Avg Cost              = 1.914896
+
+────────────────────────────────────────────────────────────────────────
+  VIOLATION COMPOSITION (fraction of total soft violations)
+────────────────────────────────────────────────────────────────────────
+
+  Vboundary / total     = 0.217857
+  Vgrouping / total     = 0.782143
+  Vmib / total          = 0.000000
+
+────────────────────────────────────────────────────────────────────────
+  TOTAL VIOLATION UNITS (summed across all cases)
+────────────────────────────────────────────────────────────────────────
+
+  Σ Vboundary           = 122
+  Σ Vgrouping           = 438
+  Σ Vmib                = 0
+  Σ total_soft          = 560
+  Σ Nsoft               = 4478
+
+────────────────────────────────────────────────────────────────────────
+  SIZE-GROUP BREAKDOWN
+────────────────────────────────────────────────────────────────────────
+
+      Bucket    N  Feas     HPWLgap     Areagap        Vrel     Vbnd/Ns     Vgrp/Ns     Vmib/Ns        Cost
+  ---------------------------------------------------------------------------------------------------------
+      n21-40   20    20      0.7482      0.1680      0.1557      0.0328      0.1230      0.0000      1.5493
+      n41-60   20    20      0.8793      0.1676      0.1334      0.0293      0.1042      0.0000      1.7732
+      n61-80   20    20      0.7792      0.1299      0.1220      0.0266      0.0955      0.0000      1.9269
+     n81-100   20    20      0.8367      0.1466      0.1331      0.0325      0.1006      0.0000      2.2943
+    n101-120   20    20      0.7946      0.1003      0.1022      0.0206      0.0816      0.0000      2.0307
+
+────────────────────────────────────────────────────────────────────────
+  INTERPRETATION GUIDE
+────────────────────────────────────────────────────────────────────────
+
+  Cost = quality_factor × violation_multiplier × runtime_factor
+         = (1 + 0.5·(HPWLgap + Areagap)) × exp(2.0·Vrel) × max(0.7, R^0.3)
+
+  - HPWLgap > 0  → wirelength is worse than baseline
+  - Areagap > 0  → bounding-box area is larger than baseline
+  - Vrel > 0     → soft constraints (boundary/grouping/MIB) are violated
+  - The exponential exp(2·Vrel) amplifies even small violation ratios
+  - Local evaluation uses RuntimeFactor = 1.0 (neutral)
+
+  Dominant cost driver: the term with the largest average value.
+========================================================================

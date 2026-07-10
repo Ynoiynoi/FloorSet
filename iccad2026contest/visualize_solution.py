@@ -428,7 +428,9 @@ def choose_output_path(args: argparse.Namespace) -> str:
         return args.output
 
     if args.optimizer:
-        stem = Path(args.optimizer).stem
+        optimizer_path = Path(args.optimizer)
+        stem = optimizer_path.stem
+        return str(optimizer_path.with_name(f"{stem}_test_{args.test_id}.png"))
     elif args.results_json:
         stem = Path(args.results_json).stem
     else:

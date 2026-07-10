@@ -82,7 +82,7 @@ class FreeRect:
 class MyOptimizer(FloorplanOptimizer):
     def __init__(self, verbose: bool = False):
         super().__init__(verbose)
-        self.beam_width = 22
+        self.beam_width = 24
         self.state_candidate_limit = 20
         self.local_passes = 3
 

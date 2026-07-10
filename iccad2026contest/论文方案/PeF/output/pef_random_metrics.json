@@ -1,0 +1,15 @@
+{
+  "seed": 7,
+  "modules": 32,
+  "nets": 70,
+  "outline_w": 88.70941928677989,
+  "outline_h": 88.70941928677988,
+  "hpwl_initial": 6611.795749297694,
+  "hpwl_global": 6598.909613930088,
+  "hpwl_final": 6188.971208350345,
+  "overlap_initial": 202.04244460858482,
+  "overlap_global": 40.93788360823727,
+  "overlap_final": 4.896544587511696e-13,
+  "visualization": "output\\pef_random_floorplan.png",
+  "final_image": "output\\pef_random_floorplan_final.png"
+}
